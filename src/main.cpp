@@ -495,6 +495,9 @@ bool ICPCManagementSystem::CommandHandler() {
 }
 
 int main() {
+#ifndef ONLINE_JUDGE
+    freopen("../data/output.txt", "w", stdout);
+#endif
     ICPCManagementSystem ICPC_management_system;
     while (ICPC_management_system.CommandHandler());
     return 0;

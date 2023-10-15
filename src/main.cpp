@@ -2,20 +2,23 @@
 // Created by zj on 10/13/2023.
 //
 
+#include <iostream>
 #include <cstdio>
 #include <string>
 #include <set>
 #include <queue>
-#include <utility>
 #include <algorithm>
 #include <unordered_map>
-#include <cassert>
+#include <vector>
+#include <cstring>
+
+int function_call_count = 0;
 
 class ICPCManagementSystem {
 public:
 
     ICPCManagementSystem() : contest_started_(false), frozen_(false), problems_(0),
-                             team_count_(0), teams_(nullptr) {}
+                             team_count_(0), teams_(nullptr), rankings_array_(nullptr) {}
 
     ~ICPCManagementSystem();
 
@@ -44,7 +47,8 @@ public:
 
 private:
     static const int kStatusCount = 4;
-    static const int kMaxStringLength = 100;
+    static const int kMaxStringLength = 21;
+    static const int kMaxProblemCount = 26;
 
     constexpr static const char *const kStatusString[kStatusCount + 1] = {"Accepted", "Wrong_Answer", "Runtime_Error",
                                                                           "Time_Limit_Exceed", "ALL"};
@@ -54,7 +58,7 @@ private:
     struct Team;
 
     struct compareTeam {
-        bool operator()(const Team *a, const Team *b) const;
+        inline bool operator()(const Team *a, const Team *b) const;
     };
 
     std::set<std::string> names_list_;
@@ -65,6 +69,7 @@ private:
     int problems_;
     Team *teams_;
     int team_count_;
+    Team **rankings_array_{};
 
     std::vector<Submission> submissions_;
 
@@ -126,7 +131,7 @@ struct ICPCManagementSystem::Submission {
 };
 
 struct ICPCManagementSystem::Team {
-    std::string name_;
+    char name_[kMaxStringLength]{};
     int accepted_problems_;
     int frozen_problems_;
     int penalty_;
@@ -161,16 +166,19 @@ struct ICPCManagementSystem::Team {
 
     Problem *problems_;
     Submission *last_submission_[kStatusCount + 1]{};
+    int *accepted_time_{};
 
-    Team() : accepted_problems_(0), frozen_problems_(0), penalty_(0), rank_(0), problems_(nullptr) {}
+    Team() : accepted_problems_(0), frozen_problems_(0), penalty_(0), rank_(0), problems_(nullptr), accepted_time_(
+            nullptr) {}
 
-    void initialize(std::string name, int problems, int rank) {
-        name_ = std::move(name);
+    void initialize(const char *name, int problems, int rank) {
+        strcpy(name_, name);
         accepted_problems_ = 0;
         frozen_problems_ = 0;
         penalty_ = 0;
         rank_ = rank;
         problems_ = new Problem[problems];
+        accepted_time_ = new int[problems];
         for (auto &i: last_submission_) {
             i = new Submission[problems + 1];
         }
@@ -178,6 +186,7 @@ struct ICPCManagementSystem::Team {
 
     ~Team() {
         delete[] problems_;
+        delete[] accepted_time_;
         for (auto &i: last_submission_) {
             delete[] i;
         }
@@ -195,24 +204,25 @@ struct ICPCManagementSystem::Team {
         return __builtin_popcount(accepted_problems_);
     }
 
-    void getAcceptedTime(int *accepted_time) const {
+    void getAcceptedTime() const {
         int mask = accepted_problems_, i = 0;
         while (mask) {
             int problem_id = __builtin_ctz(mask);
-            accepted_time[i] = problems_[problem_id].accepted_time_;
+            accepted_time_[i] = problems_[problem_id].accepted_time_;
             mask ^= 1 << problem_id;
             ++i;
         }
-        std::sort(accepted_time, accepted_time + i, std::greater<>());
+        std::sort(accepted_time_, accepted_time_ + i, std::greater<>());
     }
 };
 
 ICPCManagementSystem::~ICPCManagementSystem() {
+    delete[] rankings_array_;
     delete[] teams_;
 }
 
-bool ICPCManagementSystem::compareTeam::operator()(const ICPCManagementSystem::Team *a,
-                                                   const ICPCManagementSystem::Team *b) const {
+inline bool ICPCManagementSystem::compareTeam::operator()(const ICPCManagementSystem::Team *a,
+                                                          const ICPCManagementSystem::Team *b) const {
     if (a->getAcceptedCount() != b->getAcceptedCount()) {
         return a->getAcceptedCount() > b->getAcceptedCount();
     }
@@ -220,12 +230,9 @@ bool ICPCManagementSystem::compareTeam::operator()(const ICPCManagementSystem::T
         return a->penalty_ < b->penalty_;
     }
     const int accepted_problem_count = a->getAcceptedCount();
-    int submission_time[2][accepted_problem_count];
-    a->getAcceptedTime(submission_time[0]);
-    b->getAcceptedTime(submission_time[1]);
     for (int i = 0; i < accepted_problem_count; ++i) {
-        if (submission_time[0][i] != submission_time[1][i]) {
-            return submission_time[0][i] < submission_time[1][i];
+        if (a->accepted_time_[i] != b->accepted_time_[i]) {
+            return a->accepted_time_[i] < b->accepted_time_[i];
         }
     }
     return a < b;
@@ -253,12 +260,12 @@ bool ICPCManagementSystem::startContest(int duration, int problems) {
     problems_ = problems;
     team_count_ = static_cast<int>(names_list_.size());
     teams_ = new Team[team_count_];
+    rankings_array_ = new Team *[team_count_];
     int i = 0;
     for (const auto &name: names_list_) {
-        teams_[i].initialize(name, problems, i + 1);
+        teams_[i].initialize(name.c_str(), problems, i + 1);
         rankings_.insert(rankings_.end(), &teams_[i]);
         names_to_id_[name] = &teams_[i];
-        assert(getTeamPointer(name) == &teams_[i]);
         i++;
     }
     contest_started_ = true;
@@ -274,6 +281,7 @@ void ICPCManagementSystem::submitSolution(const std::string &team_name, const st
     int problem_id = getProblemID(problem_string);
     Submission submission(team, problem_id, result, time);
     if (!frozen_) {
+        // push the submission into the submission list, waiting for flushing
         submissions_.push_back(submission);
     } else {
         // update the problem data of the team
@@ -315,6 +323,7 @@ void ICPCManagementSystem::flush(bool log) {
             team->accepted_problems_ |= 1 << problem_id;
             problem.accepted_time_ = time;
             team->penalty_ += problem.getPenalty();
+            team->getAcceptedTime();
             rankings_.insert(team);
         } else {
             // Unaccepted
@@ -323,8 +332,9 @@ void ICPCManagementSystem::flush(bool log) {
     }
     submissions_.clear();
     int rank = 1;
-    for (auto &team: rankings_) {
+    for (const auto &team: rankings_) {
         team->rank_ = rank;
+        rankings_array_[rank - 1] = team;
         ++rank;
     }
     if (log)
@@ -350,7 +360,8 @@ bool ICPCManagementSystem::scroll() {
     flush(false);
     printRankings();
     std::priority_queue<Team *, std::vector<Team *>, compareTeam> teams_with_frozen_problems;
-    for (auto &team: rankings_) {
+    for (int i = 0; i < team_count_; ++i) {
+        Team *team = rankings_array_[i];
         if (team->frozen_problems_) {
             teams_with_frozen_problems.push(team);
         }
@@ -358,23 +369,30 @@ bool ICPCManagementSystem::scroll() {
     while (!teams_with_frozen_problems.empty()) {
         Team *team = teams_with_frozen_problems.top();
         teams_with_frozen_problems.pop();
-        rankings_.erase(team);
-        auto runner_up_before_unfreezing = rankings_.upper_bound(team);
         int problem_id = team->getFirstFrozenProblem();
         Team::Problem &problem = team->problems_[problem_id];
-        problem.unfreeze();
-        if (problem.accepted()) {
-            team->accepted_problems_ |= 1 << problem_id;
-            team->penalty_ += problem.getPenalty();
+        if (problem.accepted_time_after_frozen_) {
+            rankings_.erase(team);
+            auto runner_up_before_unfreezing = rankings_.upper_bound(team);
+            problem.unfreeze();
+            if (problem.accepted()) {
+                team->accepted_problems_ |= 1 << problem_id;
+                team->penalty_ += problem.getPenalty();
+                team->getAcceptedTime();
+            }
+            team->frozen_problems_ ^= 1 << problem_id;
+            auto runner_up_after_unfreezing = rankings_.upper_bound(team);
+            if (runner_up_before_unfreezing != runner_up_after_unfreezing) {
+                char *replaced_team_name = (*runner_up_after_unfreezing)->name_;
+                printf("%s %s %d %d\n", team->name_, replaced_team_name, team->getAcceptedCount(),
+                       team->penalty_);
+                rankings_.insert(runner_up_after_unfreezing, team);
+            }
+            rankings_.insert(runner_up_after_unfreezing, team);
+        } else {
+            problem.unfreeze();
+            team->frozen_problems_ ^= 1 << problem_id;
         }
-        team->frozen_problems_ ^= 1 << problem_id;
-        auto runner_up_after_unfreezing = rankings_.upper_bound(team);
-        if (runner_up_before_unfreezing != runner_up_after_unfreezing) {
-            std::string replaced_team_name = (*runner_up_after_unfreezing)->name_;
-            printf("%s %s %d %d\n", team->name_.c_str(), replaced_team_name.c_str(), team->getAcceptedCount(),
-                   team->penalty_);
-        }
-        rankings_.insert(runner_up_after_unfreezing, team);
         if (team->frozen_problems_) {
             teams_with_frozen_problems.push(team);
         }
@@ -395,7 +413,7 @@ int ICPCManagementSystem::queryRanking(const std::string &team_name) {
     if (frozen_) {
         puts("[Warning]Scoreboard is frozen. The ranking may be inaccurate until it were scrolled.");
     }
-    printf("%s NOW AT RANKING %d\n", team->name_.c_str(), team->rank_);
+    printf("%s NOW AT RANKING %d\n", team->name_, team->rank_);
     return team->rank_;
 }
 
@@ -413,23 +431,21 @@ bool ICPCManagementSystem::querySubmission(const std::string &team_name, const s
     if (!submission.exists()) {
         puts("Cannot find any submission.");
     } else {
-        printf("%s %c %s %d\n", team->name_.c_str(), getProblemName(submission.problem_),
+        printf("%s %c %s %d\n", team->name_, getProblemName(submission.problem_),
                kStatusString[submission.result_], submission.time_);
     }
     return true;
 }
 
 void ICPCManagementSystem::printRankings(bool debug) {
-    for (auto &team: rankings_) {
-        printf("%s %d %d %d ", team->name_.c_str(), team->rank_, team->getAcceptedCount(), team->penalty_);
+    for (int i = 0; i < team_count_; ++i) {
+        Team *team = rankings_array_[i];
+        printf("%s %d %d %d ", team->name_, team->rank_, team->getAcceptedCount(), team->penalty_);
         for (int problem_id = 0; problem_id < problems_; ++problem_id) {
             Team::Problem &problem = team->problems_[problem_id];
             if (team->isFrozen(problem_id)) {
                 printf("%d/%d", -problem.unaccepted_submissions_, problem.submissions_after_frozen_);
             } else {
-                if(problem.unaccepted_submissions_ > 1000) {
-                    ;
-                }
                 if (problem.accepted()) {
                     putchar('+');
                     if (problem.unaccepted_submissions_) {
@@ -495,10 +511,14 @@ bool ICPCManagementSystem::CommandHandler() {
 }
 
 int main() {
-#ifndef ONLINE_JUDGE
-    freopen("../data/output.txt", "w", stdout);
-#endif
+//#ifndef ONLINE_JUDGE
+//    freopen("../data/output.txt", "w", stdout);
+//#endif
     ICPCManagementSystem ICPC_management_system;
     while (ICPC_management_system.CommandHandler());
+#ifndef ONLINE_JUDGE
+    // print to stderr
+    fprintf(stderr, "function_call_count: %d\n", function_call_count);
+#endif
     return 0;
 }
